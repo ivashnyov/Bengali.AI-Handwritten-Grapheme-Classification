@@ -244,16 +244,34 @@ class ImageDataset(Dataset):
         flattened_image = self.df.iloc[idx].values.astype(np.uint8)
         image = np.expand_dims(flattened_image.reshape(100, 100), 2)
 
+        if self.transforms is not None:
+            augmented = self.transforms(image=image)
+            image = augmented['image']
+
         if self.label == 'grapheme_root':
             label = self.labels['grapheme_root'].values[idx]
         elif self.label == 'vowel_diacritic':
             label = self.labels['vowel_diacritic'].values[idx]
-        else:
+        elif self.label == 'consonant_diacritic':
             label = self.labels['consonant_diacritic'].values[idx]
+        elif self.label == 'all':
+            grapheme_root =  self.labels['grapheme_root'].values[idx]
+            vowel_diacritic = self.labels['vowel_diacritic'].values[idx]
+            consonant_diacritic = self.labels['consonant_diacritic'].values[idx]
+
+            image = torch.from_numpy(image.transpose((2,0,1)))
+            grapheme_root = torch.tensor(grapheme_root).long()
+            vowel_diacritic = torch.tensor(vowel_diacritic).long()
+            consonant_diacritic = torch.tensor(consonant_diacritic).long() 
             
-        if self.transforms is not None:
-            augmented = self.transforms(image=image)
-            image = augmented['image']
+            output_dict  = {
+                'grapheme_root' : grapheme_root, 
+                'vowel_diacritic' : vowel_diacritic, 
+                'consonant_diacritic' : consonant_diacritic, 
+                'image' : image
+                        }
+
+            return output_dict
 
         image = torch.from_numpy(image.transpose((2, 0, 1)))
         label = torch.tensor(label).long()
@@ -315,3 +333,65 @@ class RecallCallback(MetricCallback):
             output_key=output_key,
             activation=activation
         )
+
+
+class TaskMetricCallback(Callback):
+    '''
+    Proposed metrics:
+    import numpy as np
+    import sklearn.metrics
+
+    scores = []
+    for component in ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic']:
+        y_true_subset = solution[solution[component] == component]['target'].values
+        y_pred_subset = submission[submission[component] == component]['target'].values
+        scores.append(sklearn.metrics.recall_score(
+            y_true_subset, y_pred_subset, average='macro'))
+    final_score = np.average(scores, weights=[2,1,1])
+    '''
+
+    def __init__(
+        self, 
+        input_key: str = ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic'], 
+        output_key: str = ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic'],
+        class_names: str = ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic'],
+        prefix: str = "taskmetric", 
+        ignore_index=None
+    ):
+        super().__init__(CallbackOrder.Metric)
+        self.metric_fn = lambda outputs, targets: recall_score(targets, outputs, average="macro")
+        self.prefix = prefix
+        self.output_key = output_key
+        self.input_key = input_key
+        self.class_names = class_names
+        self.outputs = [[] for i in range(3)]
+        self.targets = [[] for i in range(3)]
+
+    def on_batch_end(self, state: RunnerState):
+        
+        for i in range(3):
+            outputs = state.output[self.output_key[i]].detach().cpu().numpy()
+            targets = state.input[self.input_key[i]].detach().cpu().numpy()
+            #num_classes = outputs.shape[1]
+            outputs = np.argmax(outputs, axis=1)
+            #outputs = [np.eye(num_classes)[y] for y in outputs]
+            #targets = [np.eye(num_classes)[y] for y in targets]
+            self.outputs[i].extend(outputs)
+            self.targets[i].extend(targets)
+
+    def on_loader_start(self, state):
+        self.outputs = [[] for i in range(3)]
+        self.targets = [[] for i in range(3)]
+
+    def on_loader_end(self, state):
+        metric_name = self.prefix
+        score_vec = []
+        for i in range(3):
+            targets = np.array(self.targets[i])
+            outputs = np.array(self.outputs[i])
+            metric = self.metric_fn(outputs, targets)
+            score_vec.append(metric)
+            state.metrics.epoch_values[state.loader_name][self.class_names[i]] = float(metric)
+            
+            
+        state.metrics.epoch_values[state.loader_name][metric_name] = np.average(score_vec, weights=[2,1,1])
