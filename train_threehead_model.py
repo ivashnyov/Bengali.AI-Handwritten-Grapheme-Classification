@@ -126,8 +126,8 @@ loaders["valid"] = val_loader
 
 runner = SupervisedRunner(
     input_key='image',
-    input_target_key=None, 
-    output_key=None
+    output_key=None,
+    input_target_key=None
     )
 
 optimizer = RAdam(
@@ -149,17 +149,21 @@ criterions_dict = {
     'consonant_diacritic_loss':torch.nn.CrossEntropyLoss()
     }
 callbacks=[
+    MixupCutmixCallback(fields=["image"], 
+                        output_key=("logit_grapheme_root", "logit_vowel_diacritic", "logit_consonant_diacritic"),
+                        input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic"),
+                        alpha=0.5),
     CriterionCallback(input_key='grapheme_root',
-                    output_key='grapheme_root',
+                    output_key='logit_grapheme_root',
                     prefix='grapheme_root_loss',
                     criterion_key='grapheme_root_loss', multiplier=2.0),
     CriterionCallback(input_key='vowel_diacritic',
-                    output_key='vowel_diacritic',
+                    output_key='logit_vowel_diacritic',
                     prefix='vowel_diacritic_loss',
                     criterion_key='vowel_diacritic_loss', 
                     multiplier=1.0),
     CriterionCallback(input_key='consonant_diacritic',
-                    output_key='consonant_diacritic',
+                    output_key='logit_consonant_diacritic',
                     prefix='consonant_diacritic_loss',
                     criterion_key='consonant_diacritic_loss', 
                     multiplier=1.0),
@@ -167,7 +171,9 @@ callbacks=[
                                 loss_keys=['grapheme_root_loss',
                                         'vowel_diacritic_loss',
                                         'consonant_diacritic_loss']),
-    TaskMetricCallback(), 
+    TaskMetricCallback(
+        output_key=("logit_grapheme_root", "logit_vowel_diacritic", "logit_consonant_diacritic"),
+        input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic")), 
     EarlyStoppingCallback(patience = 7)]
 
 runner.train(
@@ -178,7 +184,7 @@ runner.train(
     optimizer=optimizer,
     callbacks=callbacks,
     loaders=loaders,
-    logdir=os.path.join(DATA_FOLDER, './baseline_effnetb8_three_head'),
+    logdir=os.path.join(DATA_FOLDER, './effnetb8_three_head_cutmix_mixup'),
     scheduler=scheduler,
     fp16=True,
     num_epochs=50,
