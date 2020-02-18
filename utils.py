@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import torch
+from torch.nn.modules import Module
 from albumentations.core.transforms_interface import DualTransform
 from albumentations.augmentations import functional as F
 from torch.utils.data import Dataset
@@ -507,3 +508,15 @@ class MixupCutmixCallback(CriterionCallback):
                loss_arr[1] * self.weight_vowel_diacritic + \
                loss_arr[2] * self.weight_consonant_diacritic
         return loss
+
+
+class FocalLoss(Module):
+    def __init__(self, gamma=0, reduction='none'):
+        super(FocalLoss, self).__init__()
+        self.reduction = reduction
+        self.gamma = gamma
+
+    def forward(self, input, target):
+        ce_loss = torch.nn.functional.cross_entropy(input, target, reduction=self.reduction)
+        pt = torch.exp(-ce_loss)
+        return ((1 - pt) ** self.gamma * ce_loss).mean()
