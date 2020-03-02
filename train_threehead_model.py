@@ -18,9 +18,11 @@ from catalyst.utils import set_global_seed
 from catalyst.dl.runner import SupervisedRunner
 from catalyst.dl.callbacks import EarlyStoppingCallback, CriterionAggregatorCallback
 from catalyst.contrib.optimizers import RAdam, Lookahead, Lamb
-#from efficientnet_pytorch.model import EfficientNet
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from catalyst.contrib.schedulers.onecycle import OneCycleLRWithWarmup
 from efficientnet.model import EfficientNet
 from efficientnet.utils import get_same_padding_conv2d, round_filters
+from resnet.model import resnet50, resnext101_32x8d
 from utils import *
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -47,7 +49,7 @@ val_mask = all_data['type'] != 'train'
 
 image_data = []
 for i in range(4):
-    chunk = pd.read_feather(os.path.join(TRAIN_DATA, 'train_data_{}.feather'.format(i)))
+    chunk = pd.read_parquet(os.path.join(DATA_FOLDER, 'train_image_data_{}.parquet'.format(i)))
     chunk.index = chunk.image_id
     chunk.drop(['image_id'], axis=1, inplace=True)
     chunk.astype(np.uint8)
@@ -56,31 +58,49 @@ del chunk
 
 image_data = pd.concat(image_data)
 
-batch_size = 128
-num_workers = 4
+batch_size = 100
+num_workers = 0
 
-augs = [HorizontalFlip(always_apply=True),
-        MotionBlur(always_apply=True),
-        ShiftScaleRotate(always_apply=True),
-        GaussNoise(always_apply=True),
-        MedianBlur(always_apply=True),
-        CoarseDropout(always_apply=True),
-        GridDropout(always_apply=True)]
+# augs = [MotionBlur(always_apply=True),
+#         ShiftScaleRotate(always_apply=True),
+#         GaussNoise(always_apply=True),
+#         MedianBlur(always_apply=True),
+#         CoarseDropout(always_apply=True),
+#         # GridDropout(always_apply=True)
+#         ]
+
+# transforms_train = A.Compose([
+#     AugMix(width=3,
+#            depth=8,
+#            alpha=.25,
+#            p=1.,
+#            augmentations=augs,
+#            mean=[0.5],
+#            std=[0.5],
+#            resize_height=100,
+#            resize_width=100),
+# ])
 
 transforms_train = A.Compose([
-    AugMix(width=3,
-           depth=8,
-           alpha=.25,
-           p=1.,
-           augmentations=augs,
-           mean=[0.5],
-           std=[0.5],
-           resize_height=100,
-           resize_width=100),
-])
+        A.Resize(width=128,
+                height=128),
+        A.OneOf([A.RandomContrast(), 
+                 A.RandomBrightness(), 
+                 A.RandomGamma(),
+                 A.RandomBrightnessContrast()],p=0.5),
+        A.OneOf([A.GridDistortion(),
+                 A.ElasticTransform(), 
+                 A.OpticalDistortion(),
+                 A.ShiftScaleRotate(),
+                ],p=0.5),
+        A.CoarseDropout(),
+        A.Normalize(mean=0.5,
+                    std=0.5)
+    ],p=1.0)
+
 transforms_val = A.Compose([
-    A.Resize(width=100,
-             height=100),
+    A.Resize(width=128,
+             height=128),
     A.Normalize(mean=0.5,
                 std=0.5)
 ])
@@ -102,14 +122,14 @@ train_loader = DataLoader(
     train_dataset,
     batch_size=batch_size,
     num_workers=num_workers,
-    pin_memory=True,
+    pin_memory=False,
     shuffle=True
     )
 val_loader = DataLoader(
     val_dataset,
     batch_size=batch_size,
     num_workers=num_workers,
-    pin_memory=True,
+    pin_memory=False,
     shuffle=False
     )
 
@@ -132,16 +152,11 @@ runner = SupervisedRunner(
 
 optimizer = RAdam(
     model.parameters(),
-    lr=3e-4,
-    weight_decay=0.01
+    lr=1e-4,
+    weight_decay=0.001
     )
 
-optimizer_la = Lookahead(optimizer)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-      optimizer_la,
-      factor=0.1, 
-      patience=5
-      ) 
+scheduler = ReduceLROnPlateau(optimizer=optimizer, factor=0.75, patience=3)
 
 criterions_dict = {
     'vowel_diacritic_loss':torch.nn.CrossEntropyLoss(), 
@@ -152,6 +167,7 @@ callbacks=[
     MixupCutmixCallback(fields=["image"], 
                         output_key=("logit_grapheme_root", "logit_vowel_diacritic", "logit_consonant_diacritic"),
                         input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic"),
+                        mixuponly=False,
                         alpha=0.5),
     CriterionCallback(input_key='grapheme_root',
                     output_key='logit_grapheme_root',
@@ -173,8 +189,7 @@ callbacks=[
                                         'consonant_diacritic_loss']),
     TaskMetricCallback(
         output_key=("logit_grapheme_root", "logit_vowel_diacritic", "logit_consonant_diacritic"),
-        input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic")), 
-    EarlyStoppingCallback(patience = 7)]
+        input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic"))]
 
 runner.train(
     model=model,
@@ -184,9 +199,9 @@ runner.train(
     optimizer=optimizer,
     callbacks=callbacks,
     loaders=loaders,
-    logdir=os.path.join(DATA_FOLDER, './effnetb8_three_head_cutmix_mixup'),
+    logdir=os.path.join(DATA_FOLDER, './effnetb8_three_heavy_head_parquet_mixes'),
     scheduler=scheduler,
     fp16=True,
-    num_epochs=50,
+    num_epochs=200,
     verbose=True
     )

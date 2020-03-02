@@ -244,7 +244,7 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         flattened_image = self.df.iloc[idx].values.astype(np.uint8)
-        image = np.expand_dims(flattened_image.reshape(100, 100), 2)
+        image = np.expand_dims(flattened_image.reshape(137, 236), 2)
 
         if self.transforms is not None:
             augmented = self.transforms(image=image)
@@ -261,7 +261,7 @@ class ImageDataset(Dataset):
             vowel_diacritic = self.labels['vowel_diacritic'].values[idx]
             consonant_diacritic = self.labels['consonant_diacritic'].values[idx]
 
-            image = torch.from_numpy(image.transpose((2,0,1)))
+            image = torch.from_numpy(image.transpose((2, 0, 1)))
             grapheme_root = torch.tensor(grapheme_root).long()
             vowel_diacritic = torch.tensor(vowel_diacritic).long()
             consonant_diacritic = torch.tensor(consonant_diacritic).long() 
@@ -424,6 +424,7 @@ class MixupCutmixCallback(CriterionCallback):
             weight_grapheme_root=2.0,
             weight_vowel_diacritic=1.0,
             weight_consonant_diacritic=1.0,
+            mixuponly=True,
             **kwargs
     ):
         """
@@ -453,6 +454,7 @@ class MixupCutmixCallback(CriterionCallback):
         self.weight_vowel_diacritic = weight_vowel_diacritic
         self.weight_consonant_diacritic = weight_consonant_diacritic
         self.apply_mixup = True
+        self.mixuponly = mixuponly
 
     def on_loader_start(self, state: RunnerState):
         self.is_needed = not self.on_train_only or \
@@ -482,11 +484,14 @@ class MixupCutmixCallback(CriterionCallback):
             self.lam = 1
         self.index = torch.randperm(state.input[self.fields[0]].shape[0])
         self.index.to(state.device)
-        self.apply_mixup = (np.random.rand() < 0.5)
-        if self.apply_mixup:
+        if self.mixuponly:
             self.do_mixup(state)
         else:
-            self.do_cutmix(state)
+            self.apply_mixup = (np.random.rand() < 0.5)
+            if self.apply_mixup:
+                self.do_mixup(state)
+            else:
+                self.do_cutmix(state)
 
     def _compute_loss(self, state: RunnerState, criterion):
         loss_arr = [0, 0, 0]
