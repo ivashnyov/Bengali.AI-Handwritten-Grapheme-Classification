@@ -11,79 +11,154 @@ from albumentations import (
 import albumentations as A
 from typing import List
 import catalyst
-from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback, RunnerState
+from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback
 import random
 import collections
 from catalyst.utils import set_global_seed
 from catalyst.dl.runner import SupervisedRunner
 from catalyst.dl.callbacks import EarlyStoppingCallback, CriterionAggregatorCallback
-from catalyst.contrib.optimizers import RAdam, Lookahead, Lamb
+from catalyst.contrib.nn.optimizers import RAdam, Lookahead, Lamb
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from catalyst.contrib.schedulers.onecycle import OneCycleLRWithWarmup
 from efficientnet.model import EfficientNet
 from efficientnet.utils import get_same_padding_conv2d, round_filters
 from resnet.model import resnet50, resnext101_32x8d
+import pretrainedmodels
 from utils import *
+import torch.nn as nn
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1"
+#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,7"
 
 set_global_seed(42)
 
-DATA_FOLDER = './data'
-TRAIN_DATA = './data/train'
+DATA_FOLDER = '../../data/kaggle'
 
-train_data = pd.read_csv(os.path.join(DATA_FOLDER, './train_data.tsv'))
-train_data[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']] = train_data[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']].astype('uint8')
-train_data.drop(['test_fold'], axis=1, inplace=True)
-train_data['type'] = 'train'
-validation_data = pd.read_csv(os.path.join(DATA_FOLDER, './validation_data.tsv'))
-validation_data[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']] = validation_data[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']].astype('uint8')
-validation_data['type'] = 'validation'
-all_data = pd.concat([train_data, validation_data])
+grapheme_map = pd.read_csv(os.path.join(DATA_FOLDER, 'grapheme_map.csv'))
+grapheme_map = dict(zip(grapheme_map["grapheme"], grapheme_map["idx"]))
 
-train_image_ids = all_data['image_id'][all_data['type'] == 'train'].values
-valid_image_ids = all_data['image_id'][all_data['type'] != 'train'].values
-train_mask = all_data['type'] == 'train'
-val_mask = all_data['type'] != 'train'
+all_data = pd.read_csv(os.path.join(DATA_FOLDER, './gc_224_oof.csv'))
+all_data[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']] = all_data[['grapheme_root', 'vowel_diacritic', 'consonant_diacritic']].astype('uint8')
 
-image_data = []
-for i in range(4):
-    chunk = pd.read_parquet(os.path.join(DATA_FOLDER, 'train_image_data_{}.parquet'.format(i)))
-    chunk.index = chunk.image_id
-    chunk.drop(['image_id'], axis=1, inplace=True)
-    chunk.astype(np.uint8)
-    image_data.append(chunk)
-del chunk
+train_mask = np.bitwise_and(all_data['fold'] != 0, all_data['intopk'])
+val_mask = all_data['fold'] == 0
 
-image_data = pd.concat(image_data)
+train_image_ids = all_data['image_id'][train_mask].values
+valid_image_ids = all_data['image_id'][val_mask].values
 
-batch_size = 100
-num_workers = 0
+ny1 = np.array(all_data.groupby("vowel_diacritic").count()["image_id"].tolist())
+ny2 = np.array(all_data.groupby("grapheme_root").count()["image_id"].tolist())
+ny3 = np.array(all_data.groupby("consonant_diacritic").count()["image_id"].tolist())
 
-# augs = [MotionBlur(always_apply=True),
-#         ShiftScaleRotate(always_apply=True),
-#         GaussNoise(always_apply=True),
-#         MedianBlur(always_apply=True),
-#         CoarseDropout(always_apply=True),
-#         # GridDropout(always_apply=True)
-#         ]
+def get_w(ny, beta=0.999):
+    return torch.Tensor((1 - beta) / (1 - beta **ny)).cuda()
 
-# transforms_train = A.Compose([
-#     AugMix(width=3,
-#            depth=8,
-#            alpha=.25,
-#            p=1.,
-#            augmentations=augs,
-#            mean=[0.5],
-#            std=[0.5],
-#            resize_height=100,
-#            resize_width=100),
-# ])
+class ClassificationModel(nn.Module): 
+    def __init__(self, 
+                 backbone : str, 
+                 n_output : int, 
+                 input_channels : int = 3, 
+                 pretrained : bool =True, 
+                 activation=None):
+        super(ClassificationModel, self).__init__()
+        """
+        The aggregation model of different predefined archtecture
+
+        Args:
+            backbone : model architecture to use, one of (resnet18 | resnet34 | densenet121 | se_resnext50_32x4d | se_resnext101_32x4d | efficientnet-b0 - efficientnet-b6)
+            n_output : number of classes to predict
+            input_channels : number of channels for the input image
+            pretrained : bool value either to use weights pretrained on imagenet or to random initialization
+            activation : a callable will be applied at the very end
+        """
+        self.backbone = backbone
+
+        if backbone == "resnet18": 
+            self.encoder = models.resnet18(pretrained=pretrained) 
+        elif backbone == "resnet34": 
+            self.encoder = models.resnet34(pretrained=pretrained) 
+        elif backbone == "densenet121": 
+            self.encoder = models.densenet121(pretrained=pretrained)
+        elif backbone == "se_resnext50_32x4d": 
+            if pretrained:
+                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained = 'imagenet') 
+            else:
+                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained = None) 
+        elif backbone == "se_resnext101_32x4d":
+            if pretrained:
+                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained = 'imagenet') 
+            else:
+                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained = None) 
+
+        avgpool = nn.AdaptiveAvgPool2d(1)
+
+        if backbone == "resnet34" or backbone == "resnet18":
+            if input_channels != 3:
+                conv = nn.Conv2d(input_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+                conv.weight.data = self.encoder.conv1.weight.data.sum(dim=1).unsqueeze(1).repeat_interleave(input_channels, dim=1)
+                self.encoder.conv1 = conv
+
+            self.encoder.avgpool = avgpool
+            self.encoder.fc = nn.Linear(self.encoder.fc.in_features, n_output)
+        elif backbone == "densenet121": 
+            if input_channels != 3:
+                conv = nn.Conv2d(input_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+                conv.weight.data = self.encoder.features.conv0.weight.data.sum(dim=1).unsqueeze(1).repeat_interleave(input_channels, dim=1)
+                self.encoder.features.conv0 = conv 
+
+            self.encoder.classifier = nn.Linear(self.encoder.classifier.in_features, n_output)
+            self.encoder.avgpool = avgpool
+        elif backbone == "se_resnext50_32x4d" or backbone == "se_resnext101_32x4d":
+            if input_channels != 3:
+                conv = nn.Conv2d(input_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+                conv.weight.data = self.encoder.layer0.conv1.weight.data.sum(dim=1).unsqueeze(1).repeat_interleave(input_channels, dim=1)
+                self.encoder.layer0.conv1 = conv 
+
+            self.encoder.avg_pool = avgpool
+
+        elif backbone.startswith("efficientnet"):
+            if pretrained:
+                self.encoder = EfficientNet.from_pretrained(backbone)
+            else:
+                self.encoder = EfficientNet.from_name(backbone)
+
+            if input_channels != 3:
+                self.encoder._conv_stem = nn.Conv2d(input_channels, self.encoder._conv_stem.out_channels, kernel_size=(3, 3), stride=(2, 2), padding=(3, 3), bias=False)
+     
+            self.encoder._avg_pooling = avgpool
+            self.encoder._fc = nn.Linear(self.encoder._fc.in_features, n_output)
+        in_features = self.encoder.last_linear.in_features
+
+        self.fc0 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[0]))
+        self.fc1 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[1]))
+        self.fc2 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[2]))
+        self.fc3 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[3]))
+        self.encoder.last_linear = nn.Identity()
+        self.activation = activation 
+
+
+    def forward(self, x):
+        x = self.encoder(x) 
+
+        x0, x1, x2, x3 = self.fc0(x), self.fc1(x), self.fc2(x), self.fc3(x)
+
+        return {'logit_vowel_diacritic': x0,
+                'logit_grapheme_root': x1,
+                'logit_consonant_diacritic': x2,
+                'logit_grapheme' : x3}
+
+
+TRAIN = [os.path.join(DATA_FOLDER, 'train_image_data_' + str(i) + '.parquet') for i in range(4)]
+data_full = pd.concat([pd.read_parquet(path) for path in TRAIN],ignore_index=True)
+data_train_df = data_full[train_mask]
+data_valid_df = data_full[val_mask]
+
+IMG_SIZE = 128
+batch_size = 128
+num_workers = 16
 
 transforms_train = A.Compose([
-        A.Resize(width=128,
-                height=128),
+        A.Resize(width=IMG_SIZE,
+                height=IMG_SIZE),
         A.OneOf([A.RandomContrast(), 
                  A.RandomBrightness(), 
                  A.RandomGamma(),
@@ -99,22 +174,26 @@ transforms_train = A.Compose([
     ],p=1.0)
 
 transforms_val = A.Compose([
-    A.Resize(width=128,
-             height=128),
+    A.Resize(width=IMG_SIZE,
+             height=IMG_SIZE),
     A.Normalize(mean=0.5,
                 std=0.5)
 ])
 
 train_dataset = ImageDataset(
-    df = image_data.loc[train_image_ids,:],
+#    df = image_data.loc[train_image_ids,:],
+    df = data_train_df,
     labels = all_data.loc[train_mask, :],
     label = 'all',
+    grapheme_map = grapheme_map,
     transforms = transforms_train
     )
 val_dataset = ImageDataset(
-    df = image_data.loc[valid_image_ids,:],
+#    df = image_data.loc[valid_image_ids,:],
+    df = data_valid_df,
     labels = all_data.loc[val_mask, :],
     label = 'all',
+    grapheme_map = grapheme_map,
     transforms = transforms_val
     )
 
@@ -133,11 +212,17 @@ val_loader = DataLoader(
     shuffle=False
     )
 
-model = EfficientNet.from_name("efficientnet-b8")
-model.load_state_dict(torch.load('efficientnet/efficientnet-b8.pth'), strict=False)
-Conv2d = get_same_padding_conv2d(image_size = model._global_params.image_size)
-out_channels = round_filters(32, model._global_params)
-model._conv_stem = Conv2d(1, out_channels, kernel_size=3, stride=2, bias=False)
+#model = EfficientNet.from_name("efficientnet-b8")
+#model.load_state_dict(torch.load('adv-efficientnet-b8-22a8fe65.pth'), strict=False)
+#Conv2d = get_same_padding_conv2d(image_size = model._global_params.image_size)
+#out_channels = round_filters(32, model._global_params)
+#model._conv_stem = Conv2d(1, out_channels, kernel_size=3, stride=2, bias=False)
+#model.load_state_dict(torch.load('effnetb8_three_heavy_head_merge/checkpoints/best.pth')["model_state_dict"], strict=True)
+
+
+
+model = ClassificationModel(backbone = "se_resnext50_32x4d", n_output = [11,168,7,1295], input_channels=1)
+#model.load_state_dict(torch.load('resnext50/checkpoints/best.pth')["model_state_dict"], strict=True)
 model.cuda()
 
 loaders = collections.OrderedDict()
@@ -152,21 +237,24 @@ runner = SupervisedRunner(
 
 optimizer = RAdam(
     model.parameters(),
-    lr=1e-4,
+    lr=3e-5,
     weight_decay=0.001
     )
-
-scheduler = ReduceLROnPlateau(optimizer=optimizer, factor=0.75, patience=3)
+        
+            
+scheduler = ReduceLROnPlateau(optimizer=optimizer, factor=0.75, patience=3, mode='max')
 
 criterions_dict = {
-    'vowel_diacritic_loss':torch.nn.CrossEntropyLoss(), 
-    'grapheme_root_loss':torch.nn.CrossEntropyLoss(),
-    'consonant_diacritic_loss':torch.nn.CrossEntropyLoss()
+    'vowel_diacritic_loss':torch.nn.CrossEntropyLoss(weight=get_w(ny1)), 
+    'grapheme_root_loss':torch.nn.CrossEntropyLoss(weight=get_w(ny2)),
+    'consonant_diacritic_loss':torch.nn.CrossEntropyLoss(weight=get_w(ny3)),
+    'grapheme_loss' : torch.nn.CrossEntropyLoss()
     }
+
 callbacks=[
     MixupCutmixCallback(fields=["image"], 
-                        output_key=("logit_grapheme_root", "logit_vowel_diacritic", "logit_consonant_diacritic"),
-                        input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic"),
+                        output_key=("logit_grapheme_root", "logit_vowel_diacritic", "logit_consonant_diacritic", "logit_grapheme"),
+                        input_key=("grapheme_root", "vowel_diacritic", "consonant_diacritic", "grapheme"),
                         mixuponly=False,
                         alpha=0.5),
     CriterionCallback(input_key='grapheme_root',
@@ -193,13 +281,13 @@ callbacks=[
 
 runner.train(
     model=model,
-    main_metric='loss',
-    minimize_metric=True,
+    main_metric='taskmetric',
+    minimize_metric=False,
     criterion=criterions_dict,
     optimizer=optimizer,
     callbacks=callbacks,
     loaders=loaders,
-    logdir=os.path.join(DATA_FOLDER, './effnetb8_three_heavy_head_parquet_mixes'),
+    logdir=os.path.join('./resnext50'),
     scheduler=scheduler,
     fp16=True,
     num_epochs=200,
