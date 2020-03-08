@@ -19,15 +19,17 @@ from catalyst.dl.runner import SupervisedRunner
 from catalyst.dl.callbacks import EarlyStoppingCallback, CriterionAggregatorCallback
 from catalyst.contrib.nn.optimizers import RAdam, Lookahead, Lamb
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from efficientnet.model import EfficientNet
-from efficientnet.utils import get_same_padding_conv2d, round_filters
+from efficientnet_pytorch import EfficientNet
+
+#from efficientnet.model import EfficientNet
+#from efficientnet.utils import get_same_padding_conv2d, round_filters
 from resnet.model import resnet50, resnext101_32x8d
 import pretrainedmodels
 from utils import *
 import torch.nn as nn
 
 #os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 set_global_seed(42)
 
@@ -114,25 +116,23 @@ class ClassificationModel(nn.Module):
                 self.encoder.layer0.conv1 = conv 
 
             self.encoder.avg_pool = avgpool
+            in_features = self.encoder.last_linear.in_features
+            self.encoder.last_linear = nn.Identity()
 
         elif backbone.startswith("efficientnet"):
-            if pretrained:
-                self.encoder = EfficientNet.from_pretrained(backbone)
-            else:
-                self.encoder = EfficientNet.from_name(backbone)
+            self.encoder = EfficientNet.from_pretrained(backbone, advprop=True)
 
             if input_channels != 3:
                 self.encoder._conv_stem = nn.Conv2d(input_channels, self.encoder._conv_stem.out_channels, kernel_size=(3, 3), stride=(2, 2), padding=(3, 3), bias=False)
      
             self.encoder._avg_pooling = avgpool
-            self.encoder._fc = nn.Linear(self.encoder._fc.in_features, n_output)
-        in_features = self.encoder.last_linear.in_features
+            in_features = self.encoder._fc.in_features
+            self.encoder._fc = nn.Identity()
 
         self.fc0 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[0]))
         self.fc1 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[1]))
         self.fc2 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[2]))
         self.fc3 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[3]))
-        self.encoder.last_linear = nn.Identity()
         self.activation = activation 
 
 
@@ -213,7 +213,6 @@ val_loader = DataLoader(
     )
 
 #model = EfficientNet.from_name("efficientnet-b8")
-#model.load_state_dict(torch.load('adv-efficientnet-b8-22a8fe65.pth'), strict=False)
 #Conv2d = get_same_padding_conv2d(image_size = model._global_params.image_size)
 #out_channels = round_filters(32, model._global_params)
 #model._conv_stem = Conv2d(1, out_channels, kernel_size=3, stride=2, bias=False)
@@ -221,8 +220,9 @@ val_loader = DataLoader(
 
 
 
-model = ClassificationModel(backbone = "se_resnext50_32x4d", n_output = [11,168,7,1295], input_channels=1)
-#model.load_state_dict(torch.load('resnext50/checkpoints/best.pth')["model_state_dict"], strict=True)
+#state_dict = torch.load('resnext50/checkpoints/best_full.pth')
+model = ClassificationModel(backbone = "efficientnet-b8", n_output = [11,168,7,1295], input_channels=1)
+#model.load_state_dict(state_dict["model_state_dict"], strict=True)
 model.cuda()
 
 loaders = collections.OrderedDict()
@@ -237,10 +237,13 @@ runner = SupervisedRunner(
 
 optimizer = RAdam(
     model.parameters(),
-    lr=3e-5,
+    lr=1e-4,
     weight_decay=0.001
     )
-        
+
+#optimizer.load_state_dict(state_dict["optimizer_state_dict"]) 
+#for param_group in optimizer.param_groups:
+#    param_group['lr'] = 1e-5
             
 scheduler = ReduceLROnPlateau(optimizer=optimizer, factor=0.75, patience=3, mode='max')
 
@@ -287,7 +290,7 @@ runner.train(
     optimizer=optimizer,
     callbacks=callbacks,
     loaders=loaders,
-    logdir=os.path.join('./resnext50'),
+    logdir=os.path.join('./tmp'),
     scheduler=scheduler,
     fp16=True,
     num_epochs=200,
