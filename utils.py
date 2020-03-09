@@ -403,9 +403,9 @@ class TaskMetricCallback(Callback):
         state.metric_manager.epoch_values[state.loader_name][metric_name] = np.average(score_vec, weights=[2,1,1])
 
 def get_rand_mask(img_size):
-    sigma = np.random.randint(25, 30)
-    r = sigma + np.random.randint(-20, -10)
-    shift = np.random.randint(0, 20)
+    sigma = np.random.randint(35, 50)
+    r = sigma + np.random.randint(-30, -20)
+    shift = np.random.randint(0, 30)
 
     total = sigma + r
 
@@ -517,7 +517,7 @@ class MixupCutmixCallback(CriterionCallback):
                 self.do_mixup(state)
             else:
                 for i in range(len(state.input)):
-                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(128)).cuda()
+                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(224)).cuda()
                 
 
     def _compute_loss(self, state: State, criterion):
