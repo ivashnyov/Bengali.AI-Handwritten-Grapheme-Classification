@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.nn.modules import Module
 from albumentations.core.transforms_interface import DualTransform
-from albumentations.augmentations import functional as F
+#from albumentations.augmentations import functional as F
 from torch.utils.data import Dataset
 from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback, State
 from sklearn.metrics import recall_score
@@ -402,22 +402,23 @@ class TaskMetricCallback(Callback):
             
         state.metric_manager.epoch_values[state.loader_name][metric_name] = np.average(score_vec, weights=[2,1,1])
 
-def get_rand_mask(img_size):
+def get_rand_mask(img_size_x, img_size_y):
     sigma = np.random.randint(35, 50)
     r = sigma + np.random.randint(-30, -20)
     shift = np.random.randint(0, 30)
 
     total = sigma + r
 
-    tile_number = 1 + img_size // total
+    tile_number_x = 1 + img_size_x // total
+    tile_number_y = 1 + img_size_y // total
 
     mask = np.zeros((sigma + r, sigma + r))
     mask[:sigma, :sigma] = 1
 
-    final_mask = np.zeros((img_size, img_size))
+    final_mask = np.zeros((img_size_x, img_size_y))
 
-
-    final_mask[shift:, shift:] = np.tile(mask, (tile_number, tile_number))[:img_size - shift, :img_size - shift]
+    final_mask[shift:, shift:] = np.tile(mask, (tile_number_x, tile_number_y))[:img_size_x - shift, :img_size_y - shift]
+    
     return final_mask
 
 def rand_bbox(size, lam):
@@ -517,7 +518,7 @@ class MixupCutmixCallback(CriterionCallback):
                 self.do_mixup(state)
             else:
                 for i in range(len(state.input)):
-                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(224)).cuda()
+                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(137, 236)).cuda()
                 
 
     def _compute_loss(self, state: State, criterion):
