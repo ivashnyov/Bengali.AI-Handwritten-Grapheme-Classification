@@ -4,9 +4,16 @@ import torch
 import torch.nn as nn
 from torch.nn.modules import Module
 from albumentations.core.transforms_interface import DualTransform
-#from albumentations.augmentations import functional as F
+
+# from albumentations.augmentations import functional as F
 from torch.utils.data import Dataset
-from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback, State
+from catalyst.dl import (
+    Callback,
+    MetricCallback,
+    CallbackOrder,
+    CriterionCallback,
+    State,
+)
 from sklearn.metrics import recall_score
 from typing import List
 
@@ -14,6 +21,7 @@ from efficientnet.model import EfficientNet
 from efficientnet.utils import get_same_padding_conv2d, round_filters
 from resnet.model import resnet18, resnet34
 import pretrainedmodels
+
 
 class GridDropout(DualTransform):
     """
@@ -49,19 +57,19 @@ class GridDropout(DualTransform):
     """
 
     def __init__(
-            self,
-            ratio: float = 0.5,
-            unit_size_min: int = None,
-            unit_size_max: int = None,
-            holes_number_x: int = None,
-            holes_number_y: int = None,
-            shift_x: int = 0,
-            shift_y: int = 0,
-            random_offset: bool = False,
-            fill_value: int = 0,
-            mask_fill_value: int = None,
-            always_apply: bool = False,
-            p: float = 0.5,
+        self,
+        ratio: float = 0.5,
+        unit_size_min: int = None,
+        unit_size_max: int = None,
+        holes_number_x: int = None,
+        holes_number_y: int = None,
+        shift_x: int = 0,
+        shift_y: int = 0,
+        random_offset: bool = False,
+        fill_value: int = 0,
+        mask_fill_value: int = None,
+        always_apply: bool = False,
+        p: float = 0.5,
     ):
         super(GridDropout, self).__init__(always_apply, p)
         self.ratio = ratio
@@ -92,9 +100,13 @@ class GridDropout(DualTransform):
         # set grid using unit size limits
         if self.unit_size_min and self.unit_size_max:
             if not 2 <= self.unit_size_min <= self.unit_size_max:
-                raise ValueError("Max unit size should be >= min size, both at least 2 pixels.")
+                raise ValueError(
+                    "Max unit size should be >= min size, both at least 2 pixels."
+                )
             if self.unit_size_max > min(height, width):
-                raise ValueError("Grid size limits must be within the shortest image edge.")
+                raise ValueError(
+                    "Grid size limits must be within the shortest image edge."
+                )
             unit_width = random.randint(self.unit_size_min, self.unit_size_max + 1)
             unit_height = unit_width
         else:
@@ -103,13 +115,17 @@ class GridDropout(DualTransform):
                 unit_width = max(2, width // 10)
             else:
                 if not 1 <= self.holes_number_x <= width // 2:
-                    raise ValueError("The hole_number_x must be between 1 and image width//2.")
+                    raise ValueError(
+                        "The hole_number_x must be between 1 and image width//2."
+                    )
                 unit_width = width // self.holes_number_x
             if self.holes_number_y is None:
                 unit_height = max(min(unit_width, height), 2)
             else:
                 if not 1 <= self.holes_number_y <= height // 2:
-                    raise ValueError("The hole_number_y must be between 1 and image height//2.")
+                    raise ValueError(
+                        "The hole_number_y must be between 1 and image height//2."
+                    )
                 unit_height = height // self.holes_number_y
 
         hole_width = int(unit_width * self.ratio)
@@ -184,21 +200,26 @@ class AugMix(DualTransform):
     |   https://github.com/google-research/augmix
     """
 
-    def __init__(self, width=4,
-                 depth=3,
-                 alpha=0.5,
-                 augmentations=None,
-                 mean=[0.485, 0.456, 0.406],
-                 std=[0.229, 0.224, 0.225],
-                 always_apply=False,
-                 resize_width=None,
-                 resize_height=None,
-                 p=0.5):
+    def __init__(
+        self,
+        width=4,
+        depth=3,
+        alpha=0.5,
+        augmentations=None,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
+        always_apply=False,
+        resize_width=None,
+        resize_height=None,
+        p=0.5,
+    ):
         super(AugMix, self).__init__(always_apply, p)
         if isinstance(augmentations, (list, tuple)):
             self.augmentations = augmentations
         else:
-            raise ValueError("Augmentations list should be passed to 'augmentations' argument.")
+            raise ValueError(
+                "Augmentations list should be passed to 'augmentations' argument."
+            )
         self.width = width
         self.depth = depth
         self.alpha = alpha
@@ -208,10 +229,12 @@ class AugMix(DualTransform):
         self.resize_height = resize_height
 
     def apply_op(self, image, op):
-        image = np.clip(image * 255., 0, 255).astype(np.uint8) \
-            if 'float32' not in op.__doc__ \
+        image = (
+            np.clip(image * 255.0, 0, 255).astype(np.uint8)
+            if "float32" not in op.__doc__
             else image
-        image = op(image=image)['image']
+        )
+        image = op(image=image)["image"]
         return image
 
     def apply(self, img, **params):
@@ -227,23 +250,23 @@ class AugMix(DualTransform):
                 image_aug = self.apply_op(img, op)
 
         # Preprocessing commutes since all coefficients are convex
-        mix = np.add(mix, ws[i] * F.normalize(image_aug, mean=self.mean, std=self.std), out=mix, casting="unsafe")
+        mix = np.add(
+            mix,
+            ws[i] * F.normalize(image_aug, mean=self.mean, std=self.std),
+            out=mix,
+            casting="unsafe",
+        )
         mixed = (1 - m) * F.normalize(img, mean=self.mean, std=self.std) + m * mix
         if self.resize_height is not None and self.resize_width is not None:
             mixed = F.resize(mixed, height=self.resize_height, width=self.resize_width)
         return mixed
 
     def get_transform_init_args_names(self):
-        return ('width', 'depth', 'alpha', 'mean', 'std', 'height', 'width')
+        return ("width", "depth", "alpha", "mean", "std", "height", "width")
 
 
 class ImageDataset(Dataset):
-    def __init__(self,
-                 df,
-                 labels,
-                 label,
-                 grapheme_map,
-                 transforms=None):
+    def __init__(self, df, labels, label, grapheme_map, transforms=None):
         self.df = df.copy()
         self.labels = labels.copy()
         self.label = label
@@ -256,32 +279,32 @@ class ImageDataset(Dataset):
 
         if self.transforms is not None:
             augmented = self.transforms(image=image)
-            image = augmented['image']
+            image = augmented["image"]
 
-        if self.label == 'grapheme_root':
-            label = self.labels['grapheme_root'].values[idx]
-        elif self.label == 'vowel_diacritic':
-            label = self.labels['vowel_diacritic'].values[idx]
-        elif self.label == 'consonant_diacritic':
-            label = self.labels['consonant_diacritic'].values[idx]
-        elif self.label == 'all':
-            grapheme_root =  self.labels['grapheme_root'].values[idx]
-            vowel_diacritic = self.labels['vowel_diacritic'].values[idx]
-            consonant_diacritic = self.labels['consonant_diacritic'].values[idx]
-            grapheme = self.grapheme_map[self.labels['grapheme'].values[idx]]
+        if self.label == "grapheme_root":
+            label = self.labels["grapheme_root"].values[idx]
+        elif self.label == "vowel_diacritic":
+            label = self.labels["vowel_diacritic"].values[idx]
+        elif self.label == "consonant_diacritic":
+            label = self.labels["consonant_diacritic"].values[idx]
+        elif self.label == "all":
+            grapheme_root = self.labels["grapheme_root"].values[idx]
+            vowel_diacritic = self.labels["vowel_diacritic"].values[idx]
+            consonant_diacritic = self.labels["consonant_diacritic"].values[idx]
+            grapheme = self.grapheme_map[self.labels["grapheme"].values[idx]]
 
             image = torch.from_numpy(image.transpose((2, 0, 1)))
             grapheme_root = torch.tensor(grapheme_root).long()
             vowel_diacritic = torch.tensor(vowel_diacritic).long()
-            consonant_diacritic = torch.tensor(consonant_diacritic).long() 
-            
-            output_dict  = {
-                'grapheme_root' : grapheme_root, 
-                'vowel_diacritic' : vowel_diacritic, 
-                'consonant_diacritic' : consonant_diacritic,
-                'grapheme' : grapheme, 
-                'image' : image
-                        }
+            consonant_diacritic = torch.tensor(consonant_diacritic).long()
+
+            output_dict = {
+                "grapheme_root": grapheme_root,
+                "vowel_diacritic": vowel_diacritic,
+                "consonant_diacritic": consonant_diacritic,
+                "grapheme": grapheme,
+                "image": image,
+            }
 
             return output_dict
 
@@ -295,10 +318,10 @@ class ImageDataset(Dataset):
 
 
 def recall(
-        outputs: torch.Tensor,
-        targets: torch.Tensor,
-        threshold: float = None,
-        activation: str = None
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    threshold: float = None,
+    activation: str = None,
 ):
     """
     Args:
@@ -312,7 +335,7 @@ def recall(
     outputs = torch.argmax(outputs, dim=1)
     outputs = outputs.detach().cpu().numpy()
     targets = targets.detach().cpu().numpy()
-    score = recall_score(targets, outputs, average='macro')
+    score = recall_score(targets, outputs, average="macro")
     return score
 
 
@@ -322,11 +345,11 @@ class RecallCallback(MetricCallback):
     """
 
     def __init__(
-            self,
-            input_key: str = "targets",
-            output_key: str = "logits",
-            prefix: str = "recall",
-            activation: str = None
+        self,
+        input_key: str = "targets",
+        output_key: str = "logits",
+        prefix: str = "recall",
+        activation: str = None,
     ):
         """
         Args:
@@ -343,12 +366,12 @@ class RecallCallback(MetricCallback):
             metric_fn=recall,
             input_key=input_key,
             output_key=output_key,
-            activation=activation
+            activation=activation,
         )
 
 
 class TaskMetricCallback(Callback):
-    '''
+    """
     Proposed metrics:
     import numpy as np
     import sklearn.metrics
@@ -360,18 +383,20 @@ class TaskMetricCallback(Callback):
         scores.append(sklearn.metrics.recall_score(
             y_true_subset, y_pred_subset, average='macro'))
     final_score = np.average(scores, weights=[2,1,1])
-    '''
+    """
 
     def __init__(
-        self, 
-        input_key: str = ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic'], 
-        output_key: str = ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic'],
-        class_names: str = ['grapheme_root', 'consonant_diacritic', 'vowel_diacritic'],
-        prefix: str = "taskmetric", 
-        ignore_index=None
+        self,
+        input_key: str = ["grapheme_root", "consonant_diacritic", "vowel_diacritic"],
+        output_key: str = ["grapheme_root", "consonant_diacritic", "vowel_diacritic"],
+        class_names: str = ["grapheme_root", "consonant_diacritic", "vowel_diacritic"],
+        prefix: str = "taskmetric",
+        ignore_index=None,
     ):
         super().__init__(CallbackOrder.Metric)
-        self.metric_fn = lambda outputs, targets: recall_score(targets, outputs, average="macro")
+        self.metric_fn = lambda outputs, targets: recall_score(
+            targets, outputs, average="macro"
+        )
         self.prefix = prefix
         self.output_key = output_key
         self.input_key = input_key
@@ -380,14 +405,14 @@ class TaskMetricCallback(Callback):
         self.targets = [[] for i in range(3)]
 
     def on_batch_end(self, state: State):
-        
+
         for i in range(3):
             outputs = state.output[self.output_key[i]].detach().cpu().numpy()
             targets = state.input[self.input_key[i]].detach().cpu().numpy()
-            #num_classes = outputs.shape[1]
+            # num_classes = outputs.shape[1]
             outputs = np.argmax(outputs, axis=1)
-            #outputs = [np.eye(num_classes)[y] for y in outputs]
-            #targets = [np.eye(num_classes)[y] for y in targets]
+            # outputs = [np.eye(num_classes)[y] for y in outputs]
+            # targets = [np.eye(num_classes)[y] for y in targets]
             self.outputs[i].extend(outputs)
             self.targets[i].extend(targets)
 
@@ -403,10 +428,14 @@ class TaskMetricCallback(Callback):
             outputs = np.array(self.outputs[i])
             metric = self.metric_fn(outputs, targets)
             score_vec.append(metric)
-            state.metric_manager.epoch_values[state.loader_name][self.class_names[i]] = float(metric)
-            
-            
-        state.metric_manager.epoch_values[state.loader_name][metric_name] = np.average(score_vec, weights=[2,1,1])
+            state.metric_manager.epoch_values[state.loader_name][
+                self.class_names[i]
+            ] = float(metric)
+
+        state.metric_manager.epoch_values[state.loader_name][metric_name] = np.average(
+            score_vec, weights=[2, 1, 1]
+        )
+
 
 def get_rand_mask(img_size_x, img_size_y):
     sigma = np.random.randint(35, 50)
@@ -423,14 +452,17 @@ def get_rand_mask(img_size_x, img_size_y):
 
     final_mask = np.zeros((img_size_x, img_size_y))
 
-    final_mask[shift:, shift:] = np.tile(mask, (tile_number_x, tile_number_y))[:img_size_x - shift, :img_size_y - shift]
-    
+    final_mask[shift:, shift:] = np.tile(mask, (tile_number_x, tile_number_y))[
+        : img_size_x - shift, : img_size_y - shift
+    ]
+
     return final_mask
+
 
 def rand_bbox(size, lam):
     W = size[2]
     H = size[3]
-    cut_rat = np.sqrt(1. - lam)
+    cut_rat = np.sqrt(1.0 - lam)
     cut_w = np.int(W * cut_rat)
     cut_h = np.int(H * cut_rat)
     # uniform
@@ -445,16 +477,16 @@ def rand_bbox(size, lam):
 
 class MixupCutmixCallback(CriterionCallback):
     def __init__(
-            self,
-            fields: List[str] = ("image",),
-            alpha=1.0,
-            on_train_only=True,
-            weight_grapheme_root=2.0,
-            weight_vowel_diacritic=1.0,
-            weight_consonant_diacritic=1.0,
-            mixuponly=True,
-            resolution=(137, 236),
-            **kwargs
+        self,
+        fields: List[str] = ("image",),
+        alpha=1.0,
+        on_train_only=True,
+        weight_grapheme_root=2.0,
+        weight_vowel_diacritic=1.0,
+        weight_consonant_diacritic=1.0,
+        mixuponly=True,
+        resolution=(137, 236),
+        **kwargs
     ):
         """
         Args:
@@ -468,8 +500,7 @@ class MixupCutmixCallback(CriterionCallback):
                 So, if on_train_only is True, use a standard output/metric
                 for validation.
         """
-        assert len(fields) > 0, \
-            "At least one field for MixupCallback is required"
+        assert len(fields) > 0, "At least one field for MixupCallback is required"
         assert alpha >= 0, "alpha must be>=0"
         super().__init__(**kwargs)
         print("Custom MixupCutmixCallback is being initialized!")
@@ -489,23 +520,28 @@ class MixupCutmixCallback(CriterionCallback):
         self.resolution = resolution
 
     def on_loader_start(self, state: State):
-        self.is_needed = not self.on_train_only or \
-                         state.loader_name.startswith("train")
+        self.is_needed = not self.on_train_only or state.loader_name.startswith("train")
 
     def do_mixup(self, state: State):
         for f in self.fields:
-            state.input[f] = self.lam * state.input[f] + \
-                             (1 - self.lam) * state.input[f][self.index]
+            state.input[f] = (
+                self.lam * state.input[f] + (1 - self.lam) * state.input[f][self.index]
+            )
 
     def do_cutmix(self, state: State):
-        bbx1, bby1, bbx2, bby2 =\
-            rand_bbox(state.input[self.fields[0]].shape, self.lam)
+        bbx1, bby1, bbx2, bby2 = rand_bbox(state.input[self.fields[0]].shape, self.lam)
         for f in self.fields:
-            state.input[f][:, :, bbx1:bbx2, bby1:bby2] =\
-                state.input[f][self.index, :, bbx1:bbx2, bby1:bby2]
-        self.lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1)
-                        / (state.input[self.fields[0]].shape[-1]
-                           * state.input[self.fields[0]].shape[-2]))
+            state.input[f][:, :, bbx1:bbx2, bby1:bby2] = state.input[f][
+                self.index, :, bbx1:bbx2, bby1:bby2
+            ]
+        self.lam = 1 - (
+            (bbx2 - bbx1)
+            * (bby2 - bby1)
+            / (
+                state.input[self.fields[0]].shape[-1]
+                * state.input[self.fields[0]].shape[-2]
+            )
+        )
 
     def on_batch_start(self, state: State):
         if not self.is_needed:
@@ -526,51 +562,66 @@ class MixupCutmixCallback(CriterionCallback):
                 self.do_mixup(state)
             else:
                 for i in range(len(state.input)):
-                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(self.resolution[0], self.resolution[1])).cuda()
-                
+                    state.input[self.fields[0]][i] = (
+                        state.input[self.fields[0]][i]
+                        * torch.Tensor(
+                            get_rand_mask(self.resolution[0], self.resolution[1])
+                        ).cuda()
+                    )
 
     def _compute_loss(self, state: State, criterion):
         loss_arr = [0, 0, 0, 0]
         if not self.is_needed or self.r >= self.mixup_prob + self.cutmix_prob:
-            for i, (input_key, output_key) in enumerate(list(zip(self.input_key, self.output_key))):
+            for i, (input_key, output_key) in enumerate(
+                list(zip(self.input_key, self.output_key))
+            ):
                 pred = state.output[output_key]
                 y = state.input[input_key]
-                _criterion = criterion[input_key + '_loss']
+                _criterion = criterion[input_key + "_loss"]
                 loss_arr[i] = _criterion(pred, y)
         else:
-            for i, (input_key, output_key) in enumerate(list(zip(self.input_key, self.output_key))):
+            for i, (input_key, output_key) in enumerate(
+                list(zip(self.input_key, self.output_key))
+            ):
                 pred = state.output[output_key]
                 y_a = state.input[input_key]
                 y_b = state.input[input_key][self.index]
-                _criterion = criterion[input_key + '_loss']
-                loss_arr[i] = self.lam * _criterion(pred, y_a) + \
-                              (1 - self.lam) * _criterion(pred, y_b)
-        loss = loss_arr[0] * self.weight_grapheme_root + \
-               loss_arr[1] * self.weight_vowel_diacritic + \
-               loss_arr[2] * self.weight_consonant_diacritic + \
-               loss_arr[3] * 1
+                _criterion = criterion[input_key + "_loss"]
+                loss_arr[i] = self.lam * _criterion(pred, y_a) + (
+                    1 - self.lam
+                ) * _criterion(pred, y_b)
+        loss = (
+            loss_arr[0] * self.weight_grapheme_root
+            + loss_arr[1] * self.weight_vowel_diacritic
+            + loss_arr[2] * self.weight_consonant_diacritic
+            + loss_arr[3] * 1
+        )
         return loss
 
 
 class FocalLoss(Module):
-    def __init__(self, gamma=0, reduction='none'):
+    def __init__(self, gamma=0, reduction="none"):
         super(FocalLoss, self).__init__()
         self.reduction = reduction
         self.gamma = gamma
 
     def forward(self, input, target):
-        ce_loss = torch.nn.functional.cross_entropy(input, target, reduction=self.reduction)
+        ce_loss = torch.nn.functional.cross_entropy(
+            input, target, reduction=self.reduction
+        )
         pt = torch.exp(-ce_loss)
         return ((1 - pt) ** self.gamma * ce_loss).mean()
 
 
-class ClassificationModel(nn.Module): 
-    def __init__(self, 
-                 backbone : str, 
-                 n_output : int, 
-                 input_channels : int = 3, 
-                 pretrained : bool =True, 
-                 activation=None):
+class ClassificationModel(nn.Module):
+    def __init__(
+        self,
+        backbone: str,
+        n_output: int,
+        input_channels: int = 3,
+        pretrained: bool = True,
+        activation=None,
+    ):
         super(ClassificationModel, self).__init__()
         """
         The aggregation model of different predefined archtecture
@@ -584,24 +635,39 @@ class ClassificationModel(nn.Module):
         """
         self.backbone = backbone
 
-        if backbone == "se_resnext50_32x4d": 
+        if backbone == "se_resnext50_32x4d":
             if pretrained:
-                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained='imagenet') 
+                self.encoder = pretrainedmodels.se_resnext50_32x4d(
+                    pretrained="imagenet"
+                )
             else:
-                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained = None) 
+                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained=None)
         elif backbone == "se_resnext101_32x4d":
             if pretrained:
-                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained='imagenet') 
+                self.encoder = pretrainedmodels.se_resnext101_32x4d(
+                    pretrained="imagenet"
+                )
             else:
-                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained=None) 
+                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained=None)
 
         avgpool = nn.AdaptiveAvgPool2d(1)
 
         if backbone == "se_resnext50_32x4d" or backbone == "se_resnext101_32x4d":
             if input_channels != 3:
-                conv = nn.Conv2d(input_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-                conv.weight.data = self.encoder.layer0.conv1.weight.data.sum(dim=1).unsqueeze(1).repeat_interleave(input_channels, dim=1)
-                self.encoder.layer0.conv1 = conv 
+                conv = nn.Conv2d(
+                    input_channels,
+                    64,
+                    kernel_size=(7, 7),
+                    stride=(2, 2),
+                    padding=(3, 3),
+                    bias=False,
+                )
+                conv.weight.data = (
+                    self.encoder.layer0.conv1.weight.data.sum(dim=1)
+                    .unsqueeze(1)
+                    .repeat_interleave(input_channels, dim=1)
+                )
+                self.encoder.layer0.conv1 = conv
 
             self.encoder.avg_pool = avgpool
             in_features = self.encoder.last_linear.in_features
@@ -611,29 +677,61 @@ class ClassificationModel(nn.Module):
             self.encoder = EfficientNet.from_pretrained(backbone, advprop=True)
 
             if input_channels != 3:
-                self.encoder._conv_stem = nn.Conv2d(input_channels, self.encoder._conv_stem.out_channels, kernel_size=(3, 3), stride=(2, 2), padding=(3, 3), bias=False)
-     
+                self.encoder._conv_stem = nn.Conv2d(
+                    input_channels,
+                    self.encoder._conv_stem.out_channels,
+                    kernel_size=(3, 3),
+                    stride=(2, 2),
+                    padding=(3, 3),
+                    bias=False,
+                )
+
             self.encoder._avg_pooling = avgpool
             in_features = self.encoder._fc.in_features
             self.encoder._fc = nn.Identity()
 
-        self.fc0 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[0]))
-        self.fc1 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[1]))
-        self.fc2 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[2]))
-        self.fc3 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[3]))
-        self.activation = activation 
-
+        self.fc0 = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(in_features, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, n_output[0]),
+        )
+        self.fc1 = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(in_features, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, n_output[1]),
+        )
+        self.fc2 = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(in_features, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, n_output[2]),
+        )
+        self.fc3 = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(in_features, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, n_output[3]),
+        )
+        self.activation = activation
 
     def forward(self, x):
-        x = self.encoder(x) 
+        x = self.encoder(x)
 
         x0, x1, x2, x3 = self.fc0(x), self.fc1(x), self.fc2(x), self.fc3(x)
 
-        return {'logit_vowel_diacritic': x0,
-                'logit_grapheme_root': x1,
-                'logit_consonant_diacritic': x2,
-                'logit_grapheme' : x3}
+        return {
+            "logit_vowel_diacritic": x0,
+            "logit_grapheme_root": x1,
+            "logit_consonant_diacritic": x2,
+            "logit_grapheme": x3,
+        }
 
 
 def get_w(ny, beta=0.999):
-    return torch.Tensor((1 - beta) / (1 - beta **ny)).cuda()
+    return torch.Tensor((1 - beta) / (1 - beta ** ny)).cuda()

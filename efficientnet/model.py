@@ -14,6 +14,7 @@ from .utils import (
     MemoryEfficientSwish,
 )
 
+
 class MBConvBlock(nn.Module):
     """
     Mobile Inverted Residual Bottleneck Block
@@ -29,7 +30,9 @@ class MBConvBlock(nn.Module):
         self._block_args = block_args
         self._bn_mom = 1 - global_params.batch_norm_momentum
         self._bn_eps = global_params.batch_norm_epsilon
-        self.has_se = (self._block_args.se_ratio is not None) and (0 < self._block_args.se_ratio <= 1)
+        self.has_se = (self._block_args.se_ratio is not None) and (
+            0 < self._block_args.se_ratio <= 1
+        )
         self.id_skip = block_args.id_skip  # skip connection and drop connect
 
         # Get static or dynamic convolution depending on image size
@@ -37,29 +40,52 @@ class MBConvBlock(nn.Module):
 
         # Expansion phase
         inp = self._block_args.input_filters  # number of input channels
-        oup = self._block_args.input_filters * self._block_args.expand_ratio  # number of output channels
+        oup = (
+            self._block_args.input_filters * self._block_args.expand_ratio
+        )  # number of output channels
         if self._block_args.expand_ratio != 1:
-            self._expand_conv = Conv2d(in_channels=inp, out_channels=oup, kernel_size=1, bias=False)
-            self._bn0 = nn.BatchNorm2d(num_features=oup, momentum=self._bn_mom, eps=self._bn_eps)
+            self._expand_conv = Conv2d(
+                in_channels=inp, out_channels=oup, kernel_size=1, bias=False
+            )
+            self._bn0 = nn.BatchNorm2d(
+                num_features=oup, momentum=self._bn_mom, eps=self._bn_eps
+            )
 
         # Depthwise convolution phase
         k = self._block_args.kernel_size
         s = self._block_args.stride
         self._depthwise_conv = Conv2d(
-            in_channels=oup, out_channels=oup, groups=oup,  # groups makes it depthwise
-            kernel_size=k, stride=s, bias=False)
-        self._bn1 = nn.BatchNorm2d(num_features=oup, momentum=self._bn_mom, eps=self._bn_eps)
+            in_channels=oup,
+            out_channels=oup,
+            groups=oup,  # groups makes it depthwise
+            kernel_size=k,
+            stride=s,
+            bias=False,
+        )
+        self._bn1 = nn.BatchNorm2d(
+            num_features=oup, momentum=self._bn_mom, eps=self._bn_eps
+        )
 
         # Squeeze and Excitation layer, if desired
         if self.has_se:
-            num_squeezed_channels = max(1, int(self._block_args.input_filters * self._block_args.se_ratio))
-            self._se_reduce = Conv2d(in_channels=oup, out_channels=num_squeezed_channels, kernel_size=1)
-            self._se_expand = Conv2d(in_channels=num_squeezed_channels, out_channels=oup, kernel_size=1)
+            num_squeezed_channels = max(
+                1, int(self._block_args.input_filters * self._block_args.se_ratio)
+            )
+            self._se_reduce = Conv2d(
+                in_channels=oup, out_channels=num_squeezed_channels, kernel_size=1
+            )
+            self._se_expand = Conv2d(
+                in_channels=num_squeezed_channels, out_channels=oup, kernel_size=1
+            )
 
         # Output phase
         final_oup = self._block_args.output_filters
-        self._project_conv = Conv2d(in_channels=oup, out_channels=final_oup, kernel_size=1, bias=False)
-        self._bn2 = nn.BatchNorm2d(num_features=final_oup, momentum=self._bn_mom, eps=self._bn_eps)
+        self._project_conv = Conv2d(
+            in_channels=oup, out_channels=final_oup, kernel_size=1, bias=False
+        )
+        self._bn2 = nn.BatchNorm2d(
+            num_features=final_oup, momentum=self._bn_mom, eps=self._bn_eps
+        )
         self._swish = MemoryEfficientSwish()
 
     def forward(self, inputs, drop_connect_rate=None):
@@ -84,8 +110,15 @@ class MBConvBlock(nn.Module):
         x = self._bn2(self._project_conv(x))
 
         # Skip connection and drop connect
-        input_filters, output_filters = self._block_args.input_filters, self._block_args.output_filters
-        if self.id_skip and self._block_args.stride == 1 and input_filters == output_filters:
+        input_filters, output_filters = (
+            self._block_args.input_filters,
+            self._block_args.output_filters,
+        )
+        if (
+            self.id_skip
+            and self._block_args.stride == 1
+            and input_filters == output_filters
+        ):
             if drop_connect_rate:
                 x = drop_connect(x, p=drop_connect_rate, training=self.training)
             x = x + inputs  # skip connection
@@ -108,8 +141,8 @@ class EfficientNet(nn.Module):
 
     def __init__(self, blocks_args=None, global_params=None):
         super().__init__()
-        assert isinstance(blocks_args, list), 'blocks_args should be a list'
-        assert len(blocks_args) > 0, 'block args must be greater than 0'
+        assert isinstance(blocks_args, list), "blocks_args should be a list"
+        assert len(blocks_args) > 0, "block args must be greater than 0"
         self._global_params = global_params
         self._blocks_args = blocks_args
 
@@ -122,9 +155,15 @@ class EfficientNet(nn.Module):
 
         # Stem
         in_channels = 3  # bw
-        out_channels = round_filters(32, self._global_params)  # number of output channels
-        self._conv_stem = Conv2d(in_channels, out_channels, kernel_size=3, stride=2, bias=False)
-        self._bn0 = nn.BatchNorm2d(num_features=out_channels, momentum=bn_mom, eps=bn_eps)
+        out_channels = round_filters(
+            32, self._global_params
+        )  # number of output channels
+        self._conv_stem = Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=2, bias=False
+        )
+        self._bn0 = nn.BatchNorm2d(
+            num_features=out_channels, momentum=bn_mom, eps=bn_eps
+        )
 
         # Build blocks
         self._blocks = nn.ModuleList([])
@@ -132,15 +171,21 @@ class EfficientNet(nn.Module):
 
             # Update block input and output filters based on depth multiplier.
             block_args = block_args._replace(
-                input_filters=round_filters(block_args.input_filters, self._global_params),
-                output_filters=round_filters(block_args.output_filters, self._global_params),
-                num_repeat=round_repeats(block_args.num_repeat, self._global_params)
+                input_filters=round_filters(
+                    block_args.input_filters, self._global_params
+                ),
+                output_filters=round_filters(
+                    block_args.output_filters, self._global_params
+                ),
+                num_repeat=round_repeats(block_args.num_repeat, self._global_params),
             )
 
             # The first block needs to take care of stride and filter size increase.
             self._blocks.append(MBConvBlock(block_args, self._global_params))
             if block_args.num_repeat > 1:
-                block_args = block_args._replace(input_filters=block_args.output_filters, stride=1)
+                block_args = block_args._replace(
+                    input_filters=block_args.output_filters, stride=1
+                )
             for _ in range(block_args.num_repeat - 1):
                 self._blocks.append(MBConvBlock(block_args, self._global_params))
 
@@ -148,18 +193,40 @@ class EfficientNet(nn.Module):
         in_channels = block_args.output_filters  # output of final block
         out_channels = round_filters(1280, self._global_params)
         self._conv_head = Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
-        self._bn1 = nn.BatchNorm2d(num_features=out_channels, momentum=bn_mom, eps=bn_eps)
+        self._bn1 = nn.BatchNorm2d(
+            num_features=out_channels, momentum=bn_mom, eps=bn_eps
+        )
 
         # Final linear layer
         self._avg_pooling = nn.AdaptiveAvgPool2d(1)
         self._dropout = nn.Dropout(self._global_params.dropout_rate)
         # Vowel diacritic
-        self._fc_vowel_diacritic = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 11))
+        self._fc_vowel_diacritic = nn.Sequential(
+            nn.Linear(out_channels, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, 11),
+        )
         # Grapheme root
-        self._fc_grapheme_root = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 168))
+        self._fc_grapheme_root = nn.Sequential(
+            nn.Linear(out_channels, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, 168),
+        )
         # Consonant diacritic
-        self._fc_consonant_diacritic = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 7))
-        self._fc_grapheme = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 1295))
+        self._fc_consonant_diacritic = nn.Sequential(
+            nn.Linear(out_channels, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, 7),
+        )
+        self._fc_grapheme = nn.Sequential(
+            nn.Linear(out_channels, 1024),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(num_features=1024),
+            nn.Linear(1024, 1295),
+        )
         self._swish = MemoryEfficientSwish()
 
     def set_swish(self, memory_efficient=True):
@@ -167,7 +234,6 @@ class EfficientNet(nn.Module):
         self._swish = MemoryEfficientSwish() if memory_efficient else Swish()
         for block in self._blocks:
             block.set_swish(memory_efficient)
-
 
     def extract_features(self, inputs):
         """ Returns output of the final convolution layer """
@@ -201,10 +267,12 @@ class EfficientNet(nn.Module):
         x2 = self._fc_grapheme_root(x)
         x3 = self._fc_consonant_diacritic(x)
         x4 = self._fc_grapheme(x)
-        return {'logit_vowel_diacritic': x1,
-                'logit_grapheme_root': x2,
-                'logit_consonant_diacritic': x3,
-                'logit_grapheme' : x4}
+        return {
+            "logit_vowel_diacritic": x1,
+            "logit_grapheme_root": x2,
+            "logit_consonant_diacritic": x3,
+            "logit_grapheme": x4,
+        }
 
     @classmethod
     def from_name(cls, model_name, override_params=None):
@@ -213,15 +281,21 @@ class EfficientNet(nn.Module):
         return cls(blocks_args, global_params)
 
     @classmethod
-    def from_pretrained(cls, model_name, advprop=False, num_classes=1000, in_channels=3):
-        model = cls.from_name(model_name, override_params={'num_classes': num_classes})
-        load_pretrained_weights(model, model_name, load_fc=(num_classes == 1000), advprop=advprop)
+    def from_pretrained(
+        cls, model_name, advprop=False, num_classes=1000, in_channels=3
+    ):
+        model = cls.from_name(model_name, override_params={"num_classes": num_classes})
+        load_pretrained_weights(
+            model, model_name, load_fc=(num_classes == 1000), advprop=advprop
+        )
         if in_channels != 3:
-            Conv2d = get_same_padding_conv2d(image_size = model._global_params.image_size)
+            Conv2d = get_same_padding_conv2d(image_size=model._global_params.image_size)
             out_channels = round_filters(32, model._global_params)
-            model._conv_stem = Conv2d(in_channels, out_channels, kernel_size=3, stride=2, bias=False)
+            model._conv_stem = Conv2d(
+                in_channels, out_channels, kernel_size=3, stride=2, bias=False
+            )
         return model
-    
+
     @classmethod
     def get_image_size(cls, model_name):
         cls._check_model_name_is_valid(model_name)
@@ -230,7 +304,7 @@ class EfficientNet(nn.Module):
 
     @classmethod
     def _check_model_name_is_valid(cls, model_name):
-        """ Validates model name. """ 
-        valid_models = ['efficientnet-b'+str(i) for i in range(9)]
+        """ Validates model name. """
+        valid_models = ["efficientnet-b" + str(i) for i in range(9)]
         if model_name not in valid_models:
-            raise ValueError('model_name should be one of: ' + ', '.join(valid_models))
+            raise ValueError("model_name should be one of: " + ", ".join(valid_models))
