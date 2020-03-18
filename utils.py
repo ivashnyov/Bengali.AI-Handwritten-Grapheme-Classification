@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.nn.modules import Module
 from albumentations.core.transforms_interface import DualTransform
 #from albumentations.augmentations import functional as F
@@ -8,6 +9,11 @@ from torch.utils.data import Dataset
 from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback, State
 from sklearn.metrics import recall_score
 from typing import List
+
+from efficientnet.model import EfficientNet
+from efficientnet.utils import get_same_padding_conv2d, round_filters
+from resnet.model import resnet18, resnet34
+import pretrainedmodels
 
 class GridDropout(DualTransform):
     """
@@ -447,6 +453,7 @@ class MixupCutmixCallback(CriterionCallback):
             weight_vowel_diacritic=1.0,
             weight_consonant_diacritic=1.0,
             mixuponly=True,
+            resolution=(137, 236)
             **kwargs
     ):
         """
@@ -554,3 +561,78 @@ class FocalLoss(Module):
         ce_loss = torch.nn.functional.cross_entropy(input, target, reduction=self.reduction)
         pt = torch.exp(-ce_loss)
         return ((1 - pt) ** self.gamma * ce_loss).mean()
+
+
+class ClassificationModel(nn.Module): 
+    def __init__(self, 
+                 backbone : str, 
+                 n_output : int, 
+                 input_channels : int = 3, 
+                 pretrained : bool =True, 
+                 activation=None):
+        super(ClassificationModel, self).__init__()
+        """
+        The aggregation model of different predefined archtecture
+
+        Args:
+            backbone : model architecture to use, one of (resnet18 | resnet34 | densenet121 | se_resnext50_32x4d | se_resnext101_32x4d | efficientnet-b0 - efficientnet-b6)
+            n_output : number of classes to predict
+            input_channels : number of channels for the input image
+            pretrained : bool value either to use weights pretrained on imagenet or to random initialization
+            activation : a callable will be applied at the very end
+        """
+        self.backbone = backbone
+
+        if backbone == "se_resnext50_32x4d": 
+            if pretrained:
+                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained='imagenet') 
+            else:
+                self.encoder = pretrainedmodels.se_resnext50_32x4d(pretrained = None) 
+        elif backbone == "se_resnext101_32x4d":
+            if pretrained:
+                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained='imagenet') 
+            else:
+                self.encoder = pretrainedmodels.se_resnext101_32x4d(pretrained=None) 
+
+        avgpool = nn.AdaptiveAvgPool2d(1)
+
+        if backbone == "se_resnext50_32x4d" or backbone == "se_resnext101_32x4d":
+            if input_channels != 3:
+                conv = nn.Conv2d(input_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+                conv.weight.data = self.encoder.layer0.conv1.weight.data.sum(dim=1).unsqueeze(1).repeat_interleave(input_channels, dim=1)
+                self.encoder.layer0.conv1 = conv 
+
+            self.encoder.avg_pool = avgpool
+            in_features = self.encoder.last_linear.in_features
+            self.encoder.last_linear = nn.Identity()
+
+        elif backbone.startswith("efficientnet"):
+            self.encoder = EfficientNet.from_pretrained(backbone, advprop=True)
+
+            if input_channels != 3:
+                self.encoder._conv_stem = nn.Conv2d(input_channels, self.encoder._conv_stem.out_channels, kernel_size=(3, 3), stride=(2, 2), padding=(3, 3), bias=False)
+     
+            self.encoder._avg_pooling = avgpool
+            in_features = self.encoder._fc.in_features
+            self.encoder._fc = nn.Identity()
+
+        self.fc0 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[0]))
+        self.fc1 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[1]))
+        self.fc2 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[2]))
+        self.fc3 = nn.Sequential(nn.Dropout(0.2), nn.Linear(in_features, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, n_output[3]))
+        self.activation = activation 
+
+
+    def forward(self, x):
+        x = self.encoder(x) 
+
+        x0, x1, x2, x3 = self.fc0(x), self.fc1(x), self.fc2(x), self.fc3(x)
+
+        return {'logit_vowel_diacritic': x0,
+                'logit_grapheme_root': x1,
+                'logit_consonant_diacritic': x2,
+                'logit_grapheme' : x3}
+
+
+def get_w(ny, beta=0.999):
+    return torch.Tensor((1 - beta) / (1 - beta **ny)).cuda()
