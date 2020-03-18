@@ -3,9 +3,9 @@ import numpy as np
 import torch
 from torch.nn.modules import Module
 from albumentations.core.transforms_interface import DualTransform
-from albumentations.augmentations import functional as F
+#from albumentations.augmentations import functional as F
 from torch.utils.data import Dataset
-from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback, RunnerState
+from catalyst.dl import Callback, MetricCallback, CallbackOrder, CriterionCallback, State
 from sklearn.metrics import recall_score
 from typing import List
 
@@ -236,14 +236,16 @@ class ImageDataset(Dataset):
                  df,
                  labels,
                  label,
+                 grapheme_map,
                  transforms=None):
-        self.df = df
-        self.labels = labels
+        self.df = df.copy()
+        self.labels = labels.copy()
         self.label = label
         self.transforms = transforms
+        self.grapheme_map = grapheme_map
 
     def __getitem__(self, idx):
-        flattened_image = self.df.iloc[idx].values.astype(np.uint8)
+        flattened_image = self.df.iloc[idx, 1:].values.astype(np.uint8)
         image = np.expand_dims(flattened_image.reshape(137, 236), 2)
 
         if self.transforms is not None:
@@ -260,6 +262,7 @@ class ImageDataset(Dataset):
             grapheme_root =  self.labels['grapheme_root'].values[idx]
             vowel_diacritic = self.labels['vowel_diacritic'].values[idx]
             consonant_diacritic = self.labels['consonant_diacritic'].values[idx]
+            grapheme = self.grapheme_map[self.labels['grapheme'].values[idx]]
 
             image = torch.from_numpy(image.transpose((2, 0, 1)))
             grapheme_root = torch.tensor(grapheme_root).long()
@@ -269,7 +272,8 @@ class ImageDataset(Dataset):
             output_dict  = {
                 'grapheme_root' : grapheme_root, 
                 'vowel_diacritic' : vowel_diacritic, 
-                'consonant_diacritic' : consonant_diacritic, 
+                'consonant_diacritic' : consonant_diacritic,
+                'grapheme' : grapheme, 
                 'image' : image
                         }
 
@@ -369,7 +373,7 @@ class TaskMetricCallback(Callback):
         self.outputs = [[] for i in range(3)]
         self.targets = [[] for i in range(3)]
 
-    def on_batch_end(self, state: RunnerState):
+    def on_batch_end(self, state: State):
         
         for i in range(3):
             outputs = state.output[self.output_key[i]].detach().cpu().numpy()
@@ -393,11 +397,29 @@ class TaskMetricCallback(Callback):
             outputs = np.array(self.outputs[i])
             metric = self.metric_fn(outputs, targets)
             score_vec.append(metric)
-            state.metrics.epoch_values[state.loader_name][self.class_names[i]] = float(metric)
+            state.metric_manager.epoch_values[state.loader_name][self.class_names[i]] = float(metric)
             
             
-        state.metrics.epoch_values[state.loader_name][metric_name] = np.average(score_vec, weights=[2,1,1])
+        state.metric_manager.epoch_values[state.loader_name][metric_name] = np.average(score_vec, weights=[2,1,1])
 
+def get_rand_mask(img_size_x, img_size_y):
+    sigma = np.random.randint(35, 50)
+    r = sigma + np.random.randint(-30, -20)
+    shift = np.random.randint(0, 30)
+
+    total = sigma + r
+
+    tile_number_x = 1 + img_size_x // total
+    tile_number_y = 1 + img_size_y // total
+
+    mask = np.zeros((sigma + r, sigma + r))
+    mask[:sigma, :sigma] = 1
+
+    final_mask = np.zeros((img_size_x, img_size_y))
+
+    final_mask[shift:, shift:] = np.tile(mask, (tile_number_x, tile_number_y))[:img_size_x - shift, :img_size_y - shift]
+    
+    return final_mask
 
 def rand_bbox(size, lam):
     W = size[2]
@@ -455,17 +477,19 @@ class MixupCutmixCallback(CriterionCallback):
         self.weight_consonant_diacritic = weight_consonant_diacritic
         self.apply_mixup = True
         self.mixuponly = mixuponly
+        self.mixup_prob = 0.7
+        self.cutmix_prob = 0.1
 
-    def on_loader_start(self, state: RunnerState):
+    def on_loader_start(self, state: State):
         self.is_needed = not self.on_train_only or \
                          state.loader_name.startswith("train")
 
-    def do_mixup(self, state: RunnerState):
+    def do_mixup(self, state: State):
         for f in self.fields:
             state.input[f] = self.lam * state.input[f] + \
                              (1 - self.lam) * state.input[f][self.index]
 
-    def do_cutmix(self, state: RunnerState):
+    def do_cutmix(self, state: State):
         bbx1, bby1, bbx2, bby2 =\
             rand_bbox(state.input[self.fields[0]].shape, self.lam)
         for f in self.fields:
@@ -475,7 +499,7 @@ class MixupCutmixCallback(CriterionCallback):
                         / (state.input[self.fields[0]].shape[-1]
                            * state.input[self.fields[0]].shape[-2]))
 
-    def on_batch_start(self, state: RunnerState):
+    def on_batch_start(self, state: State):
         if not self.is_needed:
             return
         if self.alpha > 0:
@@ -487,15 +511,19 @@ class MixupCutmixCallback(CriterionCallback):
         if self.mixuponly:
             self.do_mixup(state)
         else:
-            self.apply_mixup = (np.random.rand() < 0.5)
-            if self.apply_mixup:
+            self.r = np.random.rand()
+            if self.r < self.mixup_prob:
+                self.do_cutmix(state)
+            elif self.r < self.mixup_prob + self.cutmix_prob:
                 self.do_mixup(state)
             else:
-                self.do_cutmix(state)
+                for i in range(len(state.input)):
+                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(137, 236)).cuda()
+                
 
-    def _compute_loss(self, state: RunnerState, criterion):
-        loss_arr = [0, 0, 0]
-        if not self.is_needed:
+    def _compute_loss(self, state: State, criterion):
+        loss_arr = [0, 0, 0, 0]
+        if not self.is_needed or self.r >= self.mixup_prob + self.cutmix_prob:
             for i, (input_key, output_key) in enumerate(list(zip(self.input_key, self.output_key))):
                 pred = state.output[output_key]
                 y = state.input[input_key]
@@ -511,7 +539,8 @@ class MixupCutmixCallback(CriterionCallback):
                               (1 - self.lam) * _criterion(pred, y_b)
         loss = loss_arr[0] * self.weight_grapheme_root + \
                loss_arr[1] * self.weight_vowel_diacritic + \
-               loss_arr[2] * self.weight_consonant_diacritic
+               loss_arr[2] * self.weight_consonant_diacritic + \
+               loss_arr[3] * 1
         return loss
 
 

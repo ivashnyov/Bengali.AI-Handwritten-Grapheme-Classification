@@ -154,11 +154,12 @@ class EfficientNet(nn.Module):
         self._avg_pooling = nn.AdaptiveAvgPool2d(1)
         self._dropout = nn.Dropout(self._global_params.dropout_rate)
         # Vowel diacritic
-        self._fc_vowel_diacritic = nn.Linear(out_channels, 11)
+        self._fc_vowel_diacritic = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 11))
         # Grapheme root
-        self._fc_grapheme_root = nn.Linear(out_channels, 168)
+        self._fc_grapheme_root = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 168))
         # Consonant diacritic
-        self._fc_consonant_diacritic = nn.Linear(out_channels, 7)
+        self._fc_consonant_diacritic = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 7))
+        self._fc_grapheme = nn.Sequential(nn.Linear(out_channels, 1024), nn.LeakyReLU(0.1), nn.BatchNorm1d(num_features=1024), nn.Linear(1024, 1295))
         self._swish = MemoryEfficientSwish()
 
     def set_swish(self, memory_efficient=True):
@@ -199,9 +200,11 @@ class EfficientNet(nn.Module):
         x1 = self._fc_vowel_diacritic(x)
         x2 = self._fc_grapheme_root(x)
         x3 = self._fc_consonant_diacritic(x)
-        return {'vowel_diacritic': x1,
-                'grapheme_root': x2,
-                'consonant_diacritic': x3}
+        x4 = self._fc_grapheme(x)
+        return {'logit_vowel_diacritic': x1,
+                'logit_grapheme_root': x2,
+                'logit_consonant_diacritic': x3,
+                'logit_grapheme' : x4}
 
     @classmethod
     def from_name(cls, model_name, override_params=None):
