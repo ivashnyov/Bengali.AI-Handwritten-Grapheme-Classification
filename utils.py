@@ -453,7 +453,7 @@ class MixupCutmixCallback(CriterionCallback):
             weight_vowel_diacritic=1.0,
             weight_consonant_diacritic=1.0,
             mixuponly=True,
-            resolution=(137, 236)
+            resolution=(137, 236),
             **kwargs
     ):
         """
@@ -486,6 +486,7 @@ class MixupCutmixCallback(CriterionCallback):
         self.mixuponly = mixuponly
         self.mixup_prob = 0.7
         self.cutmix_prob = 0.1
+        self.resolution = resolution
 
     def on_loader_start(self, state: State):
         self.is_needed = not self.on_train_only or \
@@ -525,7 +526,7 @@ class MixupCutmixCallback(CriterionCallback):
                 self.do_mixup(state)
             else:
                 for i in range(len(state.input)):
-                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(137, 236)).cuda()
+                    state.input[self.fields[0]][i] = state.input[self.fields[0]][i] * torch.Tensor(get_rand_mask(self.resolution[0], self.resolution[1])).cuda()
                 
 
     def _compute_loss(self, state: State, criterion):
