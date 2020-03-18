@@ -8,7 +8,7 @@ We used the following tricks:
 - Cutmix
 - Mixup
 
-There is nothing innovative here, we just did it carefully :)
+There is nothing innovative here, we just did it carefully :wink:
 # Final submission
 Our final submission consists of four **se_resnext101_32x4d** models, trained on four different folds and original image size
 # Appreciation
